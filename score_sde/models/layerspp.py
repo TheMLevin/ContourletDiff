@@ -34,6 +34,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from DWT_IDWT.DWT_IDWT_layer import DWT_2D, IDWT_2D
+from Contourlet.contourlet_torch import ContourDec, ContourRec
 
 from . import dense_layer, layers, up_or_down_sampling
 
@@ -224,6 +225,33 @@ class WaveletDownsample(nn.Module):
         return x
 
 
+class ContourletDownsample(nn.Module):
+    def __init__(self, in_ch=None, out_ch=None, nlevs=2):
+        super().__init__()
+        out_ch = out_ch if out_ch else in_ch
+        # nlevs=2 gives 4 directional subbands + 1 lowpass = 5 total
+        # Similar to wavelet's 4 subbands
+        self.nlevs = nlevs
+        num_subbands = 1 + (2 ** nlevs)  # 1 lowpass + 2^nlevs directional
+        self.weight = nn.Parameter(torch.zeros(out_ch, in_ch * num_subbands, 3, 3))
+        self.weight.data = default_init()(self.weight.data.shape)
+        self.bias = nn.Parameter(torch.zeros(out_ch))
+
+        self.contour_dec = ContourDec(nlevs)
+
+    def forward(self, x):
+        xlo, xhi = self.contour_dec(x)
+        
+        # Concatenate lowpass with all directional subbands
+        x_subbands = [xlo] + xhi
+        x = torch.cat(x_subbands, dim=1) / 2.
+
+        x = F.conv2d(x, self.weight, stride=1, padding=1)
+        x = x + self.bias.reshape(1, -1, 1, 1)
+
+        return x
+
+
 class ResnetBlockDDPMpp_Adagn(nn.Module):
     """ResBlock adapted from DDPM."""
 
@@ -403,6 +431,95 @@ class WaveletResnetBlockBigGANpp_Adagn(nn.Module):
             hH, _ = (hLH, hHL, hHH), (xLH, xHL, xHH)
 
             h, x = h / 2., x / 2.  # shift range of ll
+
+        # Add bias to each feature map conditioned on the time embedding
+        if temb is not None:
+            h += self.Dense_0(self.act(temb))[:, :, None, None]
+        h = self.act(self.GroupNorm_1(h, zemb))
+        h = self.Dropout_0(h)
+        h = self.Conv_1(h)
+
+        if not self.skip_rescale:
+            out = x + h
+        else:
+            out = (x + h) / np.sqrt(2.)
+
+        if not self.down:
+            return out
+        return out, hH
+
+
+class ContourletResnetBlockBigGANpp_Adagn(nn.Module):
+    def __init__(self, act, in_ch, out_ch=None, temb_dim=None, zemb_dim=None, up=False, down=False,
+                 dropout=0.1, skip_rescale=True, init_scale=0., hi_in_ch=None, nlevs=2):
+        super().__init__()
+
+        out_ch = out_ch if out_ch else in_ch
+        self.GroupNorm_0 = AdaptiveGroupNorm(
+            min(in_ch // 4, 32), in_ch, zemb_dim)
+
+        self.up = up
+        self.down = down
+        self.nlevs = nlevs
+        self.num_dir_subbands = 2 ** nlevs
+
+        self.Conv_0 = conv3x3(in_ch, out_ch)
+        if temb_dim is not None:
+            self.Dense_0 = nn.Linear(temb_dim, out_ch)
+            self.Dense_0.weight.data = default_init()(self.Dense_0.weight.data.shape)
+            nn.init.zeros_(self.Dense_0.bias)
+
+        self.GroupNorm_1 = AdaptiveGroupNorm(
+            min(out_ch // 4, 32), out_ch, zemb_dim)
+        self.Dropout_0 = nn.Dropout(dropout)
+        self.Conv_1 = conv3x3(out_ch, out_ch, init_scale=init_scale)
+        if in_ch != out_ch or up or down:
+            self.Conv_2 = conv1x1(in_ch, out_ch)
+
+        self.skip_rescale = skip_rescale
+        self.act = act
+        self.in_ch = in_ch
+        self.out_ch = out_ch
+
+        if self.up:
+            # For contourlet, we have num_dir_subbands directional subbands
+            self.convH_0 = conv3x3(hi_in_ch * self.num_dir_subbands, 
+                                   out_ch * self.num_dir_subbands, 
+                                   groups=self.num_dir_subbands)
+
+        self.contour_dec = ContourDec(nlevs)
+        self.contour_rec = ContourRec()
+
+    def forward(self, x, temb=None, zemb=None, skipH=None):
+        h = self.act(self.GroupNorm_0(x, zemb))
+        h = self.Conv_0(h)
+
+        if self.in_ch != self.out_ch or self.up or self.down:
+            x = self.Conv_2(x)
+
+        hH = None
+        if self.up:
+            D = h.size(1)
+            # Process skip connections: concatenate all directional subbands
+            skipH = self.convH_0(torch.cat(skipH, dim=1) / 2.) * 2.
+            
+            # Split skipH back into individual subbands
+            skipH_list = [skipH[:, i*D:(i+1)*D] for i in range(self.num_dir_subbands)]
+            
+            # Reconstruct using contourlet: ContourRec takes [xlo, xhi] where xhi is a list
+            h = self.contour_rec([2. * h, skipH_list])
+            x = self.contour_rec([2. * x, skipH_list])
+
+        elif self.down:
+            # Decompose using contourlet
+            h_lo, h_hi = self.contour_dec(h)
+            x_lo, x_hi = self.contour_dec(x)
+            
+            # Store directional subbands for skip connection
+            hH = h_hi
+            
+            # Use only lowpass for further processing
+            h, x = h_lo / 2., x_lo / 2.  # shift range of ll
 
         # Add bias to each feature map conditioned on the time embedding
         if temb is not None:
