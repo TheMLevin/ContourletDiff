@@ -56,3 +56,4 @@ slurm*.err
 # pycache
 __pycache__
 .vscode
+ContourletDiff.code-workspace
