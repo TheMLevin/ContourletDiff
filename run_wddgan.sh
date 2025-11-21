@@ -28,6 +28,7 @@ if [[ $MODE == train ]]; then
 			--ch_mult 1 2 2 --save_content --datadir ./data/cifar-10 \
 			--master_port $MASTER_PORT --num_process_per_node $GPUS \
 			--current_resolution 16 --attn_resolutions 32 --num_disc_layers 3 --rec_loss \
+			--net_type wavelet \
 			--use_pytorch_wavelet \
 
 	elif [[ $DATASET == stl10 ]]; then
