@@ -7,11 +7,9 @@ import torchvision
 from diffusion import get_time_schedule, Posterior_Coefficients, \
     sample_from_model
 
-from DWT_IDWT.DWT_IDWT_layer import IDWT_2D
 from Contourlet.contourlet_torch import ContourDec, ContourRec
 from pytorch_fid.fid_score import calculate_fid_given_paths
-from pytorch_wavelets import DWTInverse
-from score_sde.models.ncsnpp_generator_adagn import NCSNpp, WaveletNCSNpp, ContourletNCSNpp
+from score_sde.models.ncsnpp_generator_adagn import NCSNpp, ContourletNCSNpp
 
 
 # %%
@@ -34,18 +32,18 @@ def sample_and_test(args):
     args.ori_image_size = args.image_size
     args.image_size = args.current_resolution
     
-    # Calculate num_channels for contourlet if not set
-    if args.net_type == "contourlet":
-        contourlet_nlevs = getattr(args, "contourlet_nlevs", 2)
-        num_dir_subbands = 2 ** contourlet_nlevs
-        # Contourlet: 1 lowpass + num_dir_subbands directional subbands
-        args.num_channels = 3 * (1 + num_dir_subbands)  # 3 channels * (1 + num_dir_subbands)
-        print(f"Auto-calculated num_channels for contourlet (nlevs={contourlet_nlevs}): {args.num_channels}")
-        # Set contourlet_nlevs in args for the model
+    # Calculate num_channels for contourlet (always used in cddgan)
+    contourlet_nlevs = getattr(args, "contourlet_nlevs", 2)
+    num_dir_subbands = 2 ** contourlet_nlevs
+    # Contourlet: 1 lowpass + num_dir_subbands directional subbands
+    args.num_channels = 3 * (1 + num_dir_subbands)  # 3 channels * (1 + num_dir_subbands)
+    print(f"Auto-calculated num_channels for contourlet (nlevs={contourlet_nlevs}): {args.num_channels}")
+    # Set contourlet_nlevs in args for the model
+    args.contourlet_nlevs = contourlet_nlevs
     
     print(args.image_size, args.ch_mult, args.attn_resolutions)
 
-    G_NET_ZOO = {"normal": NCSNpp, "wavelet": WaveletNCSNpp, "contourlet": ContourletNCSNpp}
+    G_NET_ZOO = {"normal": NCSNpp, "contourlet": ContourletNCSNpp}
     gen_net = G_NET_ZOO[args.net_type]
     print("GEN: {}".format(gen_net))
 
@@ -60,20 +58,15 @@ def sample_and_test(args):
     netG.load_state_dict(ckpt, strict=False)
     netG.eval()
 
-    # Wavelet/Contourlet reconstruction
-    if args.net_type == "contourlet":
-        contour_rec = ContourRec().to(device)
-    elif not args.use_pytorch_wavelet:
-        iwt = IDWT_2D("haar")
-    else:
-        iwt = DWTInverse(mode='zero', wave='haar').cuda()
+    # Contourlet reconstruction (always used in cddgan)
+    contour_rec = ContourRec().to(device)
     T = get_time_schedule(args, device)
 
     pos_coeff = Posterior_Coefficients(args, device)
 
     iters_needed = 50000 // args.batch_size
 
-    save_dir = "./wddgan_generated_samples/{}".format(args.dataset)
+    save_dir = "./cddgan_generated_samples/{}".format(args.dataset)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -97,19 +90,12 @@ def sample_and_test(args):
                     pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
 
                 fake_sample *= 2.
-                if args.net_type == "contourlet":
-                    # Contourlet reconstruction
-                    num_total_subbands = 1 + num_dir_subbands
-                    C = fake_sample.shape[1] // num_total_subbands
-                    fake_xlo = fake_sample[:, :C]
-                    fake_xhi = [fake_sample[:, (i+1)*C:(i+2)*C] for i in range(num_dir_subbands)]
-                    fake_sample = contour_rec([fake_xlo, fake_xhi])
-                elif not args.use_pytorch_wavelet:
-                    fake_sample = iwt(
-                        fake_sample[:, :3], fake_sample[:, 3:6], fake_sample[:, 6:9], fake_sample[:, 9:12])
-                else:
-                    fake_sample = iwt((fake_sample[:, :3], [torch.stack(
-                        (fake_sample[:, 3:6], fake_sample[:, 6:9], fake_sample[:, 9:12]), dim=2)]))
+                # Contourlet reconstruction (always used in cddgan)
+                num_total_subbands = 1 + num_dir_subbands
+                C = fake_sample.shape[1] // num_total_subbands
+                fake_xlo = fake_sample[:, :C]
+                fake_xhi = [fake_sample[:, (i+1)*C:(i+2)*C] for i in range(num_dir_subbands)]
+                fake_sample = contour_rec([fake_xlo, fake_xhi])
                 ender.record()
                 # WAIT FOR GPU SYNC
                 torch.cuda.synchronize()
@@ -129,19 +115,12 @@ def sample_and_test(args):
                     pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
 
                 fake_sample *= 2
-                if args.net_type == "contourlet":
-                    # Contourlet reconstruction
-                    num_total_subbands = 1 + num_dir_subbands
-                    C = fake_sample.shape[1] // num_total_subbands
-                    fake_xlo = fake_sample[:, :C]
-                    fake_xhi = [fake_sample[:, (i+1)*C:(i+2)*C] for i in range(num_dir_subbands)]
-                    fake_sample = contour_rec([fake_xlo, fake_xhi])
-                elif not args.use_pytorch_wavelet:
-                    fake_sample = iwt(
-                        fake_sample[:, :3], fake_sample[:, 3:6], fake_sample[:, 6:9], fake_sample[:, 9:12])
-                else:
-                    fake_sample = iwt((fake_sample[:, :3], [torch.stack(
-                        (fake_sample[:, 3:6], fake_sample[:, 6:9], fake_sample[:, 9:12]), dim=2)]))
+                # Contourlet reconstruction (always used in cddgan)
+                num_total_subbands = 1 + num_dir_subbands
+                C = fake_sample.shape[1] // num_total_subbands
+                fake_xlo = fake_sample[:, :C]
+                fake_xhi = [fake_sample[:, (i+1)*C:(i+2)*C] for i in range(num_dir_subbands)]
+                fake_sample = contour_rec([fake_xlo, fake_xhi])
                 fake_sample = torch.clamp(fake_sample, -1, 1)
 
                 fake_sample = to_range_0_1(fake_sample)  # 0-1
@@ -164,19 +143,12 @@ def sample_and_test(args):
             pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
 
         fake_sample *= 2
-        if args.net_type == "contourlet":
-            # Contourlet reconstruction
-            num_total_subbands = 1 + num_dir_subbands
-            C = fake_sample.shape[1] // num_total_subbands
-            fake_xlo = fake_sample[:, :C]
-            fake_xhi = [fake_sample[:, (i+1)*C:(i+2)*C] for i in range(num_dir_subbands)]
-            fake_sample = contour_rec([fake_xlo, fake_xhi])
-        elif not args.use_pytorch_wavelet:
-            fake_sample = iwt(
-                fake_sample[:, :3], fake_sample[:, 3:6], fake_sample[:, 6:9], fake_sample[:, 9:12])
-        else:
-            fake_sample = iwt((fake_sample[:, :3], [torch.stack(
-                (fake_sample[:, 3:6], fake_sample[:, 6:9], fake_sample[:, 9:12]), dim=2)]))
+        # Contourlet reconstruction (always used in cddgan)
+        num_total_subbands = 1 + num_dir_subbands
+        C = fake_sample.shape[1] // num_total_subbands
+        fake_xlo = fake_sample[:, :C]
+        fake_xhi = [fake_sample[:, (i+1)*C:(i+2)*C] for i in range(num_dir_subbands)]
+        fake_sample = contour_rec([fake_xlo, fake_xhi])
         fake_sample = torch.clamp(fake_sample, -1, 1)
 
         fake_sample = to_range_0_1(fake_sample)  # 0-1
@@ -194,8 +166,6 @@ if __name__ == '__main__':
     parser.add_argument('--measure_time', action='store_true', default=False,
                         help='whether or not measure time')
     parser.add_argument('--epoch_id', type=int, default=1000)
-    parser.add_argument('--num_channels', type=int, default=12,
-                        help='channel of wavelet/contourlet subbands (wavelet: 12, contourlet: 3*(1+2^nlevs))')
     parser.add_argument('--centered', action='store_false', default=True,
                         help='-1,1 scale')
     parser.add_argument('--use_geometric', action='store_true', default=False)
@@ -262,8 +232,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=200,
                         help='sample generating batch size')
 
-    # wavelet GAN
-    parser.add_argument("--use_pytorch_wavelet", action="store_true")
+    # contourlet GAN
     parser.add_argument("--current_resolution", type=int, default=256)
     parser.add_argument("--net_type", default="normal")
     parser.add_argument("--no_use_fbn", action="store_true")

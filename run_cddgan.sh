@@ -28,7 +28,7 @@ if [[ $MODE == train ]]; then
 			--ch_mult 1 2 2 --save_content --datadir ./data/cifar-10 \
 			--master_port $MASTER_PORT --num_process_per_node $GPUS \
 			--current_resolution 16 --attn_resolutions 32 --num_disc_layers 3 --rec_loss \
-			--net_type contourlet --contourlet_nlevs 2 \
+			--contourlet_nlevs 2 \
 
 	elif [[ $DATASET == stl10 ]]; then
 		python train_cddgan.py --dataset stl10 --image_size 64 --exp cddgan_stl10_exp1_atn16_cg1222_d4_recloss_900ep/ --num_channels_dae 128 --num_timesteps 4 \
@@ -82,7 +82,7 @@ else
 		python test_cddgan.py --dataset cifar10 --exp cddgan_cifar10_exp1_noatn_g122_d3_recloss_1800ep --num_channels_dae 128 --num_timesteps 4 \
 			--num_res_blocks 2 --nz 100 --z_emb_dim 256 --n_mlp 4 --ch_mult 1 2 2 --epoch_id 1300 \
 			--image_size 32 --current_resolution 16 --attn_resolutions 32 \
-			--net_type contourlet --contourlet_nlevs 2 \
+			--contourlet_nlevs 2 \
 			# --compute_fid --real_img_dir pytorch_fid/cifar10_train_stat.npy \
 			# --batch_size 100 --measure_time \
 
