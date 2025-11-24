@@ -166,7 +166,7 @@ def train(rank, gpu, args):
             real_data = torch.cat([xlo] + xhi, dim=1)  # [b, C*(1+num_dir_subbands), h, w]
 
             # normalize real_data
-            real_data = real_data / 2.0  # [-1, 1]
+            real_data = real_data / 2.56  # [-1, 1]
 
             assert -1 <= real_data.min() < 0
             assert 0 < real_data.max() <= 1
@@ -279,7 +279,7 @@ def train(rank, gpu, args):
                 if epoch % args.save_content_every == 0:
                     print('Saving content.')
                     content = {'epoch': epoch + 1, 'global_step': global_step, 'args': args,
-                               'netG_dict': netG.state_dict(), 'optimizerG': optimizerG.state_dict(),
+                               'netG_dict': netG.state_dict(), 'optimizerG': getattr(optimizerG, 'optimizer', optimizerG).state_dict(),
                                'schedulerG': schedulerG.state_dict(), 'netD_dict': netD.state_dict(),
                                'optimizerD': optimizerD.state_dict(), 'schedulerD': schedulerD.state_dict()}
                     torch.save(content, os.path.join(exp_path, 'content.pth'))
