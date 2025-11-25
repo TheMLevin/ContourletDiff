@@ -166,10 +166,10 @@ def train(rank, gpu, args):
             real_data = torch.cat([xlo] + xhi, dim=1)  # [b, C*(1+num_dir_subbands), h, w]
 
             # normalize real_data
-            real_data = real_data / 2.56  # [-1, 1]
+            real_data = real_data / 3  # [-1, 1]
 
-            assert -1 <= real_data.min() < 0
-            assert 0 < real_data.max() <= 1
+            assert -1 <= real_data.min() < 0, f"real_data.min() = {real_data.min()}"
+            assert 0 < real_data.max() <= 1, f"real_data.max() = {real_data.max()}"
 
             # sample t
             t = torch.randint(0, args.num_timesteps,
@@ -252,8 +252,8 @@ def train(rank, gpu, args):
             fake_sample = sample_from_model(
                 pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
 
-            fake_sample *= 2
-            real_data *= 2
+            fake_sample *= 3
+            real_data *= 3
             # Contourlet reconstruction (always used in cddgan)
             # Split fake_sample and real_data back into lowpass and directional subbands
             # Calculate channels per subband from total channels
