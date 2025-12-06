@@ -15,6 +15,10 @@ if [ -z "$1" ]; then
    GPUS=1
 fi
 
+# if [ -z "$GPUS" ]; then
+#    GPUS=1
+# fi
+
 echo $DATASET $MODE $GPUS
 
 # ----------------- Contourlet -----------
@@ -30,14 +34,14 @@ if [[ $MODE == train ]]; then
 			--current_resolution 16 --attn_resolutions 32 --num_disc_layers 3 --rec_loss \
 			--contourlet_nlevs 2 \
 
-	elif [[ $DATASET == stl10 ]]; then
-		python train_cddgan.py --dataset stl10 --image_size 64 --exp cddgan_stl10_exp1_atn16_cg1222_d4_recloss_900ep/ --num_channels_dae 128 --num_timesteps 4 \
-			--num_res_blocks 2 --batch_size 256 --num_epoch 900 --ngf 64 --nz 100 --z_emb_dim 256 --n_mlp 4 --embedding_type positional \
-			--use_ema --ema_decay 0.9999 --r1_gamma 0.02 --lr_d 1.25e-4 --lr_g 1.6e-4 --lazy_reg 15 \
-			--ch_mult 1 2 2 2 --save_content --datadir ./data/STL-10 \
-			--master_port $MASTER_PORT --num_process_per_node $GPUS \
-			--current_resolution 32 --attn_resolutions 16 --num_disc_layers 4 --rec_loss \
-			--net_type contourlet --contourlet_nlevs 2 \
+    elif [[ $DATASET == stl10 ]]; then
+      python train_cddgan.py --dataset stl10 --image_size 64 --exp cddgan_stl10_exp1_atn16_cg1222_d4_recloss_900ep/ --num_channels_dae 128 --num_timesteps 4 \
+        --num_res_blocks 2 --batch_size 256 --num_epoch 300 --ngf 64 --nz 100 --z_emb_dim 256 --n_mlp 4 --embedding_type positional \
+        --use_ema --ema_decay 0.9999 --r1_gamma 0.02 --lr_d 1.25e-4 --lr_g 1.6e-4 --lazy_reg 15 \
+        --ch_mult 1 2 2 2 --save_content --datadir ./data/STL-10 \
+        --master_port $MASTER_PORT --num_process_per_node $GPUS \
+        --current_resolution 32 --attn_resolutions 16 --num_disc_layers 4 --rec_loss \
+        --net_type contourlet --contourlet_nlevs 2 \
 
 	elif [[ $DATASET == celeba_256 ]]; then
 		python train_cddgan.py --dataset celeba_256 --image_size 256 --exp cddgan_celebahq_exp1_atn16_cg12224_d5_recloss_500ep --num_channels_dae 64 --ch_mult 1 2 2 2 4 --num_timesteps 2 \
