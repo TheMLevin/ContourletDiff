@@ -24,6 +24,13 @@ import cv2
 from time import time
 data_format = 'NHWC'
 
+# def dbg(name, x):
+#     try:
+#         print(f"[DEBUG] {name}: {tuple(x.shape)}")
+#     except:
+#         print(f"[DEBUG] {name}: <unprintable>")
+
+
 class DepthToSpace(torch.nn.Module):
 
     def __init__(self, h_factor=2, w_factor=2):
@@ -49,7 +56,46 @@ class ContourDec(torch.nn.Module):
         self.nlevs = nlevs
     
     def forward(self, x):
-        return pdfbdec_layer(x, self.nlevs)
+        H, W = x.shape[-2], x.shape[-1]
+
+        # ===============================
+        # Small-input bypass
+        # ===============================
+        # At very small spatial sizes (e.g. 4x4), the directional filterbank
+        # runs into a kernel-size > input-size issue. In that regime we just
+        # *pretend* there are directional bands and skip the real contourlet.
+        if min(H, W) < 8:
+            # dbg("ContourDec SMALL bypass input", x)
+
+            # Match the usual behavior where xlo is downsampled by 2.
+            if H >= 4 and W >= 4:
+                xlo = F.avg_pool2d(x, kernel_size=2, stride=2)  # e.g. 4x4 -> 2x2
+            else:
+                # If it's already tiny, just keep it as-is.
+                xlo = x
+
+            # For nlevs=2, dfbdec would normally give 2**nlevs = 4 directional bands.
+            num_dir = 2 ** self.nlevs
+            xhi = [torch.zeros_like(xlo) for _ in range(num_dir)]
+
+            # dbg("ContourDec bypass xlo", xlo)
+            # for i, hi in enumerate(xhi):
+                # dbg(f"ContourDec bypass xhi[{i}]", hi)
+
+            return xlo, xhi
+
+        # ===============================
+        # Normal contourlet path
+        # ===============================
+        xlo, xhi = pdfbdec_layer(x, self.nlevs)
+
+        # dbg("ContourDec input", x)
+        # dbg("ContourDec xlo", xlo)
+        # for i, hi in enumerate(xhi):
+        #     dbg(f"ContourDec xhi[{i}]", hi)
+
+        return xlo, xhi
+
 
 class ContourRec(torch.nn.Module):
 
@@ -57,7 +103,30 @@ class ContourRec(torch.nn.Module):
         super().__init__()
     
     def forward(self, x):
-        return pdfbrec_layer(x[0], x[1])
+        xlo, xhi = x
+        # dbg("ContourRec xlo", xlo)
+        # for i, hi in enumerate(xhi):
+        #     dbg(f"ContourRec xhi[{i}]", hi)
+
+        H, W = xlo.shape[-2], xlo.shape[-1]
+
+        # ===============================
+        # Small-input bypass (inverse)
+        # ===============================
+        # This mirrors the ContourDec SMALL bypass: at tiny spatial sizes
+        # we *don't* try to run the directional filterbank inverse.
+        if min(H, W) < 4:
+            # For the path that came from 4x4 → xlo(2x2), we now
+            # reconstruct approximately by a simple upsample.
+            y = torch.nn.functional.interpolate(xlo, scale_factor=2, mode='nearest')
+            # dbg("ContourRec bypass output", y)
+            return y
+
+        # ===============================
+        # Normal contourlet reconstruction path
+        # ===============================
+        return pdfbrec_layer(xlo, xhi)
+
 
 def dup(x, step=[2,2]):
     N,C,H,W = x.shape
@@ -178,8 +247,11 @@ def lprec_layer(c,d):
 def pdfbdec_layer(x, nlevs, pfilt=None, dfilt=None):
     if nlevs != 0:
         # Laplacian decomposition
+        # dbg("lpdec x", x)
         xlo, xhi = lpdec_layer(x)
-
+        # dbg("lpdec xlo", xlo)
+        # dbg("lpdec xhi", xhi)
+        # dbg("Entering dfbdec", xhi)
         # Use the ladder structure (whihc is much more efficient)
         xhi = dfbdec_layer(xhi, dfilt, nlevs)
 
@@ -221,92 +293,107 @@ def new_fbdec_layer(x, f_, type1, type2, extmod='per'):
 
 ### TODO DFB
 def dfbdec_layer(x, f, n):
+    # dbg("dfbdec input", x)
+
     f = dfb_filter(x.device)
 
     if n == 1:
         y = [None] * 2
-        # Simplest case, one level
+        # dbg("dfbdec calling fbdec x", x)
         y[0], y[1] = fbdec_layer(x, f, 'q', '1r', 'qper_col')
+        # dbg("dfbdec fbdec y0", y[0])
+        # dbg("dfbdec fbdec y1", y[1])
+
     elif n >= 2:
         y = [None] * 4
+
+        # First split
+        # dbg("dfbdec lvl1 calling fbdec x", x)
         x0, x1 = fbdec_layer(x, f, 'q', '1r', 'qper_col')
-        # y[1], y[0] = fbdec_layer(x0, f, 'q', '2c', 'per')
-        # y[3], y[2] = fbdec_layer(x1, f, 'q', '2c', 'per')
+        # dbg("dfbdec lvl1 x0", x0)
+        # dbg("dfbdec lvl1 x1", x1)
+
+        # Second split (new_fbdec_layer)
         odd_list, even_list = new_fbdec_layer([x0, x1], f, 'q', '2c', 'per')
-        # y[1], y[2] = odd_list
-        # y[0], y[3] = even_list
+
         for ix in range(len(odd_list)):
+            # dbg(f"dfbdec lvl2 odd[{ix}]", odd_list[ix])
+            # dbg(f"dfbdec lvl2 even[{ix}]", even_list[ix])
             y[ix*2+1], y[ix*2] = odd_list[ix], even_list[ix]
-        
-        # Now expand the rest of the tree
-        for l in range(3,n+1):
-            # Allocate space for the new subband outputs
+
+        # Expand deeper tree
+        for l in range(3, n+1):
+            # dbg(f"dfbdec enter level {l}", x)
+
             y_old = y.copy()
             y = [None] * (2**l)
-            
-            # The first half channels use R1 and R2
-            # for k in range(1, 2 ** (l - 2)+1):
-            #     i = (k - 1) % 2 + 1
-            #     y[2*k-1], y[2*k-2] = fbdec_layer(y_old[k-1], f, 'p', i, 'per')
+
+            # First half channels
             odd = np.arange(1, 2 ** (l - 2)+1, 2)
             even = np.arange(2, 2 ** (l - 2)+1, 2)
+
             odd_list, even_list = new_fbdec_layer([y_old[k-1] for k in odd], f, 'p', 1, 'per')
             for ix, k in enumerate(odd):
+                # dbg(f"dfbdec lvl{l} odd-p1[{ix}]", odd_list[ix])
+                # dbg(f"dfbdec lvl{l} even-p1[{ix}]", even_list[ix])
                 y[2*k-1], y[2*k-2] = odd_list[ix], even_list[ix]
+
             odd_list, even_list = new_fbdec_layer([y_old[k-1] for k in even], f, 'p', 2, 'per')
             for ix, k in enumerate(even):
+                # dbg(f"dfbdec lvl{l} odd-p2[{ix}]", odd_list[ix])
+                # dbg(f"dfbdec lvl{l} even-p2[{ix}]", even_list[ix])
                 y[2*k-1], y[2*k-2] = odd_list[ix], even_list[ix]
-                
-            # The second half channels use R3 and R4
-            # for k in range(2 ** (l - 2) + 1,2 ** (l - 1) + 1):
-            #     i = (k - 1) % 2 + 3
-            #     y[2*k-1], y[2*k-2] = fbdec_layer(y_old[k-1], f, 'p', i, 'per')
+
+            # Second half channels
             odd += 2 ** (l - 2)
             even += 2 ** (l - 2)
+
             odd_list, even_list = new_fbdec_layer([y_old[k-1] for k in odd], f, 'p', 3, 'per')
             for ix, k in enumerate(odd):
+                # dbg(f"dfbdec lvl{l} odd-p3[{ix}]", odd_list[ix])
+                # dbg(f"dfbdec lvl{l} even-p3[{ix}]", even_list[ix])
                 y[2*k-1], y[2*k-2] = odd_list[ix], even_list[ix]
+
             odd_list, even_list = new_fbdec_layer([y_old[k-1] for k in even], f, 'p', 4, 'per')
             for ix, k in enumerate(even):
+                # dbg(f"dfbdec lvl{l} odd-p4[{ix}]", odd_list[ix])
+                # dbg(f"dfbdec lvl{l} even-p4[{ix}]", even_list[ix])
                 y[2*k-1], y[2*k-2] = odd_list[ix], even_list[ix]
-    
+
     # Backsampling
     def backsamp(y=None):
         n = np.log2(len(y))
-        
         assert not (n != round(n) or n < 1), 'Input must be a cell vector of dyadic length'
-        n=int(n)
-        if n == 1:
-            # One level, the decomposition filterbank shoud be Q1r
-            # Undo the last resampling (Q1r = R2 * D1 * R3)
-            for k in range(2):
-                y[k]=resamp(y[k],4)
-                y[k][..., ::2]=resamp(y[k][..., ::2], 1)
-                y[k][..., 1::2]=resamp(y[k][..., 1::2],1)
-        
-        if n > 2:
-            N=2 ** (n - 1)
-                
-            for k in range(1, 2 ** (n - 2) +1):
-                shift = 2 * k - (2 ** (n - 2) + 1)
-                
-                # The first half channels
-                # y[2*k - 2]=resamp(y[2*k - 2],3,shift)
-                # y[2*k - 1]=resamp(y[2*k - 1],3,shift)
-                y[2*k - 2], y[2*k - 1] = new_resamp([y[2*k - 2], y[2*k - 1]],3,shift)
-                
-                # The second half channels
-                # y[2*k - 2 + N]=resamp(y[2*k - 2 + N],1,shift)
-                # y[2*k - 1 + N]=resamp(y[2*k - 1 + N],1,shift)
-                y[2*k - 2 + N], y[2*k - 1 + N] = new_resamp([y[2*k - 2 + N], y[2*k - 1 + N]],1,shift)
+        n = int(n)
 
+        if n == 1:
+            for k in range(2):
+                y[k] = resamp(y[k],4)
+                y[k][..., ::2] = resamp(y[k][..., ::2], 1)
+                y[k][..., 1::2] = resamp(y[k][..., 1::2],1)
+
+        if n > 2:
+            N = 2**(n-1)
+            for k in range(1, 2**(n-2) + 1):
+                shift = 2*k - (2**(n-2) + 1)
+
+                y[2*k-2], y[2*k-1] = new_resamp([y[2*k-2], y[2*k-1]], 3, shift)
+                y[2*k-2+N], y[2*k-1+N] = new_resamp([y[2*k-2+N], y[2*k-1+N]], 1, shift)
         return y
-    y=backsamp(y)
-    
-    # Flip the order of the second half channels
-    y[2 ** (n - 1):]=y[-1:2 ** (n - 1)-1:-1]
+
+    # dbg("dfbdec pre-backsamp", x)
+    y = backsamp(y)
+    # for i, yi in enumerate(y):
+        # dbg(f"dfbdec post-backsamp y[{i}]", yi)
+
+    # Flip ordering
+    y[2 ** (n - 1):] = y[-1:2 ** (n - 1)-1:-1]
+
+    # for i, yi in enumerate(y):
+        # dbg(f"dfbdec final y[{i}]", yi)
 
     return y
+
 
 ### TODO DFB
 def new_resamp(y, type_, shift=1):
