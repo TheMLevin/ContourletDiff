@@ -68,24 +68,34 @@ class EMA(Optimizer):
         self.optimizer.state = self.state
         self.optimizer.param_groups = self.param_groups
 
-    def swap_parameters_with_ema(self, store_params_in_ema):
-        """ This function swaps parameters with their ema values. It records original parameters in the ema
-        parameters, if store_params_in_ema is true."""
+    def swap_parameters_with_ema(self, store_params_in_ema=True):
+        """
+        Swap current parameters with their EMA versions.
 
-        # stop here if we are not applying EMA
+        If a parameter does not have an 'ema' entry (e.g., it never received
+        a gradient), we skip it safely.
+        """
+
         if not self.apply_ema:
-            warnings.warn('swap_parameters_with_ema was called when there is no EMA weights.')
+            warnings.warn('swap_parameters_with_ema was called but EMA is disabled.')
             return
 
         for group in self.optimizer.param_groups:
-            for i, p in enumerate(group['params']):
+            for p in group['params']:
                 if not p.requires_grad:
                     continue
-                ema = self.optimizer.state[p]['ema']
-                # ema = self.optimizer.state[p].get('ema', p.data.clone())
+
+                state = self.optimizer.state[p]
+                ema = state.get('ema', None)
+
+                # If EMA for this parameter does not exist, skip it.
+                if ema is None:
+                    continue
+
+                # Swap logic
                 if store_params_in_ema:
-                    tmp = p.data.detach()
-                    p.data = ema.detach()
-                    self.optimizer.state[p]['ema'] = tmp
+                    tmp = p.data.clone()
+                    p.data.copy_(ema)
+                    state['ema'] = tmp
                 else:
-                    p.data = ema.detach()
+                    p.data.copy_(ema)
