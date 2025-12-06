@@ -44,10 +44,15 @@ def train(rank, gpu, args):
 
     nz = args.nz  # latent dimension
 
+    # dataset = create_dataset(args)
+    from torch.utils.data import Subset
+
     dataset = create_dataset(args)
-    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset,
-                                                                    num_replicas=args.world_size,
-                                                                    rank=rank)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        dataset,
+        num_replicas=args.world_size,
+        rank=rank
+    )
     data_loader = torch.utils.data.DataLoader(dataset,
                                               batch_size=batch_size,
                                               shuffle=False,
@@ -124,15 +129,24 @@ def train(rank, gpu, args):
     pos_coeff = Posterior_Coefficients(args, device)
     T = get_time_schedule(args, device)
 
-    if args.resume or os.path.exists(os.path.join(exp_path, 'content.pth')):
+    if args.resume:
         checkpoint_file = os.path.join(exp_path, 'content.pth')
-        checkpoint = torch.load(checkpoint_file, map_location=device)
+        checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
+
         init_epoch = checkpoint['epoch']
         epoch = init_epoch
+
         # load G
         netG.load_state_dict(checkpoint['netG_dict'])
-        optimizerG.load_state_dict(checkpoint['optimizerG'])
+
+        # Handle EMA-wrapped optimizer on resume
+        if args.use_ema and hasattr(optimizerG, "optimizer"):
+            optimizerG.optimizer.load_state_dict(checkpoint['optimizerG'])
+        else:
+            optimizerG.load_state_dict(checkpoint['optimizerG'])
+
         schedulerG.load_state_dict(checkpoint['schedulerG'])
+
         # load D
         netD.load_state_dict(checkpoint['netD_dict'])
         optimizerD.load_state_dict(checkpoint['optimizerD'])
@@ -141,13 +155,16 @@ def train(rank, gpu, args):
         global_step = checkpoint['global_step']
         print("=> loaded checkpoint (epoch {})"
               .format(checkpoint['epoch']))
+
     else:
         global_step, epoch, init_epoch = 0, 0, 0
 
     for epoch in range(init_epoch, args.num_epoch + 1):
         train_sampler.set_epoch(epoch)
-
+        
         for iteration, (x, y) in enumerate(data_loader):
+            # if iteration >= 2:
+            #     break
             for p in netD.parameters():
                 p.requires_grad = True
             netD.zero_grad()
@@ -166,7 +183,7 @@ def train(rank, gpu, args):
             real_data = torch.cat([xlo] + xhi, dim=1)  # [b, C*(1+num_dir_subbands), h, w]
 
             # normalize real_data
-            real_data = real_data / 2.0  # [-1, 1]
+            real_data = real_data / 3.0  # [-1, 1]
 
             assert -1 <= real_data.min() < 0
             assert 0 < real_data.max() <= 1
@@ -274,14 +291,27 @@ def train(rank, gpu, args):
                 exp_path, 'sample_discrete_epoch_{}.png'.format(epoch)))
             torchvision.utils.save_image(
                 real_data, os.path.join(exp_path, 'real_data.png'))
-
             if args.save_content:
                 if epoch % args.save_content_every == 0:
                     print('Saving content.')
-                    content = {'epoch': epoch + 1, 'global_step': global_step, 'args': args,
-                               'netG_dict': netG.state_dict(), 'optimizerG': optimizerG.state_dict(),
-                               'schedulerG': schedulerG.state_dict(), 'netD_dict': netD.state_dict(),
-                               'optimizerD': optimizerD.state_dict(), 'schedulerD': schedulerD.state_dict()}
+
+                    # If EMA is enabled, optimizerG is a wrapper with an inner optimizer
+                    if args.use_ema and hasattr(optimizerG, "optimizer"):
+                        optG_state = optimizerG.optimizer.state_dict()
+                    else:
+                        optG_state = optimizerG.state_dict()
+
+                    content = {
+                        'epoch': epoch + 1,
+                        'global_step': global_step,
+                        'args': args,
+                        'netG_dict': netG.state_dict(),
+                        'optimizerG': optG_state,
+                        'schedulerG': schedulerG.state_dict(),
+                        'netD_dict': netD.state_dict(),
+                        'optimizerD': optimizerD.state_dict(),
+                        'schedulerD': schedulerD.state_dict()
+                    }
                     torch.save(content, os.path.join(exp_path, 'content.pth'))
 
             if epoch % args.save_ckpt_every == 0:
@@ -294,6 +324,7 @@ def train(rank, gpu, args):
                 if args.use_ema:
                     optimizerG.swap_parameters_with_ema(
                         store_params_in_ema=True)
+        # print("one epoch finished", epoch)
 
 
 # %%
