@@ -45,6 +45,11 @@ NIN = layers.NIN
 default_init = layers.default_init
 dense = dense_layer.dense
 
+# def dbg(name, x):
+#     try:
+#         print(f"[DEBUG] {name}: {tuple(x.shape)}")
+#     except:
+#         print(f"[DEBUG] {name}: <unprintable>")
 
 class AdaptiveGroupNorm(nn.Module):
     def __init__(self, num_groups, in_channel, style_dim):
@@ -229,27 +234,56 @@ class ContourletDownsample(nn.Module):
     def __init__(self, in_ch=None, out_ch=None, nlevs=2):
         super().__init__()
         out_ch = out_ch if out_ch else in_ch
-        # nlevs=2 gives 4 directional subbands + 1 lowpass = 5 total
-        # Similar to wavelet's 4 subbands
+
+        self.in_ch = in_ch
+        self.out_ch = out_ch
         self.nlevs = nlevs
-        num_subbands = 1 + (2 ** nlevs)  # 1 lowpass + 2^nlevs directional
-        self.weight = nn.Parameter(torch.zeros(out_ch, in_ch * num_subbands, 3, 3))
+
+        # nlevs=2 → 1 lowpass + 4 directional subbands = 5
+        self.num_subbands = 1 + (2 ** nlevs)
+
+        # Same weight as before (for contourlet path)
+        self.weight = nn.Parameter(
+            torch.zeros(out_ch, in_ch * self.num_subbands, 3, 3)
+        )
         self.weight.data = default_init()(self.weight.data.shape)
         self.bias = nn.Parameter(torch.zeros(out_ch))
 
         self.contour_dec = ContourDec(nlevs)
 
     def forward(self, x):
+        B, C, H, W = x.shape
+
+        # --- SAFETY: too small for contourlet directional filters ---
+        # dfb filters are length 12, so if min(H, W) < 12 we avoid contourlet
+        if min(H, W) < 12:
+            # Fallback: standard strided conv downsample (like Downsample with_conv=True)
+            # Use only the first `in_ch` channels of the existing weight
+            w = self.weight[:, :self.in_ch, :, :]  # [out_ch, in_ch, 3, 3]
+
+            # Match Downsample (fir=False, with_conv=True): pad then stride-2 conv
+            x = F.pad(x, (0, 1, 0, 1))  # pad right & bottom by 1
+            x = F.conv2d(x, w, stride=2, padding=0)
+            x = x + self.bias.view(1, -1, 1, 1)
+            return x
+
+        # --- Normal contourlet path (safe sizes) ---
+        # dbg("ContourletDownsample input", x)
         xlo, xhi = self.contour_dec(x)
-        
-        # Concatenate lowpass with all directional subbands
+        # dbg("CDS xlo", xlo)
+        # for i, hi in enumerate(xhi):
+        #     dbg(f"CDS xhi[{i}]", hi)
+
+        # Concatenate lowpass + all directional subbands
         x_subbands = [xlo] + xhi
-        x = torch.cat(x_subbands, dim=1) / 2.
+        x_cat = torch.cat(x_subbands, dim=1) / 2.0
 
-        x = F.conv2d(x, self.weight, stride=1, padding=1)
-        x = x + self.bias.reshape(1, -1, 1, 1)
+        x_out = F.conv2d(x_cat, self.weight, stride=1, padding=1)
+        x_out = x_out + self.bias.view(1, -1, 1, 1)
+        # dbg("ContourletDownsample final out", x_out)
 
-        return x
+        return x_out
+
 
 
 class ResnetBlockDDPMpp_Adagn(nn.Module):
@@ -491,51 +525,129 @@ class ContourletResnetBlockBigGANpp_Adagn(nn.Module):
         self.contour_rec = ContourRec()
 
     def forward(self, x, temb=None, zemb=None, skipH=None):
-        h = self.act(self.GroupNorm_0(x, zemb))
-        h = self.Conv_0(h)
+    #   dbg("CRB input", x)
 
-        if self.in_ch != self.out_ch or self.up or self.down:
-            x = self.Conv_2(x)
+      H, W = x.shape[-2], x.shape[-1]
 
-        hH = None
-        if self.up:
-            D = h.size(1)
-            # Process skip connections: concatenate all directional subbands
-            skipH = self.convH_0(torch.cat(skipH, dim=1) / 2.) * 2.
-            
-            # Split skipH back into individual subbands
-            skipH_list = [skipH[:, i*D:(i+1)*D] for i in range(self.num_dir_subbands)]
-            
-            # Reconstruct using contourlet: ContourRec takes [xlo, xhi] where xhi is a list
-            h = self.contour_rec([2. * h, skipH_list])
-            x = self.contour_rec([2. * x, skipH_list])
+      # -------------------------------
+      # FALLBACK PATH (< 16×16)
+      # -------------------------------
+      if min(H, W) < 16:
+        #   dbg("CRB fallback path triggered", x.shape)
 
-        elif self.down:
-            # Decompose using contourlet
-            h_lo, h_hi = self.contour_dec(h)
-            x_lo, x_hi = self.contour_dec(x)
-            
-            # Store directional subbands for skip connection
-            hH = h_hi
-            
-            # Use only lowpass for further processing
-            h, x = h_lo / 2., x_lo / 2.  # shift range of ll
+          # *** Respect up/down flags here like original BigGAN block ***
+          h = self.act(self.GroupNorm_0(x, zemb))
 
-        # Add bias to each feature map conditioned on the time embedding
-        if temb is not None:
-            h += self.Dense_0(self.act(temb))[:, :, None, None]
-        h = self.act(self.GroupNorm_1(h, zemb))
-        h = self.Dropout_0(h)
-        h = self.Conv_1(h)
+          if self.up:
+              # same logic as ResnetBlockBigGANpp_Adagn
+              h = up_or_down_sampling.naive_upsample_2d(h, factor=2)
+              x = up_or_down_sampling.naive_upsample_2d(x, factor=2)
+          elif self.down:
+              h = up_or_down_sampling.naive_downsample_2d(h, factor=2)
+              x = up_or_down_sampling.naive_downsample_2d(x, factor=2)
 
-        if not self.skip_rescale:
-            out = x + h
-        else:
-            out = (x + h) / np.sqrt(2.)
+          h = self.Conv_0(h)
 
-        if not self.down:
-            return out
-        return out, hH
+          if temb is not None:
+              h += self.Dense_0(self.act(temb))[:, :, None, None]
+
+          h = self.act(self.GroupNorm_1(h, zemb))
+          h = self.Dropout_0(h)
+          h = self.Conv_1(h)
+
+          if self.in_ch != self.out_ch or self.up or self.down:
+              x = self.Conv_2(x)
+
+          if not self.skip_rescale:
+              out = x + h
+          else:
+              out = (x + h) / np.sqrt(2.)
+
+          # Preserve interface: down blocks return (out, hH)
+          if self.down:
+              return out, None
+          else:
+              return out
+
+
+      # -------------------------------
+      # NORMAL CONTOURLET PATH
+      # -------------------------------
+      h = self.act(self.GroupNorm_0(x, zemb))
+    #   dbg("CRB norm0", h)
+      h = self.Conv_0(h)
+    #   dbg("CRB conv0", h)
+
+      if self.in_ch != self.out_ch or self.up or self.down:
+          x = self.Conv_2(x)
+        #   dbg("CRB conv2 (x projected)", x)
+
+      hH = None
+
+      # -------------------------------
+      # UPSAMPLE CASE
+      # -------------------------------
+      if self.up:
+        #   dbg("CRB upsample enter h", h)
+        #   dbg("CRB upsample enter skipH (raw list)", skipH)
+
+          D = h.size(1)
+
+          skipH = self.convH_0(torch.cat(skipH, dim=1) / 2.) * 2.
+        #   dbg("CRB upsample skipH combined", skipH)
+
+          skipH_list = [skipH[:, i * D:(i + 1) * D] for i in range(self.num_dir_subbands)]
+        #   for i, s in enumerate(skipH_list):
+        #       dbg(f"CRB up skipH_list[{i}]", s)
+
+          h = self.contour_rec([2. * h, skipH_list])
+          x = self.contour_rec([2. * x, skipH_list])
+
+        #   dbg("CRB up reconstructed h", h)
+        #   dbg("CRB up reconstructed x", x)
+
+      # -------------------------------
+      # DOWNSAMPLE CASE
+      # -------------------------------
+      elif self.down:
+        #   dbg("CRB downsample enter h", h)
+          h_lo, h_hi = self.contour_dec(h)
+        #   dbg("CRB h_lo", h_lo)
+        #   for i, hi in enumerate(h_hi):
+        #       dbg(f"CRB h_hi[{i}]", hi)
+
+          x_lo, x_hi = self.contour_dec(x)
+        #   dbg("CRB x_lo", x_lo)
+        #   for i, hi in enumerate(x_hi):
+        #       dbg(f"CRB x_hi[{i}]", hi)
+
+          hH = h_hi
+
+          h, x = h_lo / 2., x_lo / 2.
+        #   dbg("CRB down lowpass h", h)
+        #   dbg("CRB down lowpass x", x)
+
+      # -------------------------------
+      # FINAL RESNET LOGIC
+      # -------------------------------
+      if temb is not None:
+          h += self.Dense_0(self.act(temb))[:, :, None, None]
+        #   dbg("CRB +temb", h)
+
+      h = self.act(self.GroupNorm_1(h, zemb))
+    #   dbg("CRB norm1", h)
+      h = self.Dropout_0(h)
+      h = self.Conv_1(h)
+    #   dbg("CRB conv1", h)
+
+      out = (x + h) / np.sqrt(2.) if self.skip_rescale else (x + h)
+    #   dbg("CRB final out", out)
+
+      if not self.down:
+          return out
+      return out, hH
+
+ 
 
 
 class ResnetBlockBigGANpp_Adagn_one(nn.Module):
