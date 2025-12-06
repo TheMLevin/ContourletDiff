@@ -58,6 +58,13 @@ default_initializer = layers.default_init
 dense = dense_layer.dense
 
 
+# def dbg(tag, x):
+#     if torch.is_tensor(x):
+#         print(f"[DEBUG] {tag}: {tuple(x.shape)}")
+#     else:
+#         print(f"[DEBUG] {tag}: {x}")
+
+
 class PixelNorm(nn.Module):
     def __init__(self):
         super().__init__()
@@ -1204,7 +1211,10 @@ class ContourletNCSNpp(NCSNpp):
         for i_level in range(self.num_resolutions):
             # Residual blocks for this resolution
             for i_block in range(self.num_res_blocks):
+                # dbg(f"GEN block {m_idx} input", hs[-1])
                 h = modules[m_idx](hs[-1], temb, zemb)
+                # dbg(f"GEN block {m_idx} output", h)
+
                 m_idx += 1
                 if h.shape[-1] in self.attn_resolutions:
                     h = modules[m_idx](h)
@@ -1230,9 +1240,21 @@ class ContourletNCSNpp(NCSNpp):
                     m_idx += 1
 
                 elif self.progressive_input == 'residual':
+                    # dbg(f"Pyramid before block {m_idx}", input_pyramid)
                     input_pyramid = modules[m_idx](input_pyramid)
+                    # dbg(f"Pyramid after block {m_idx}", input_pyramid)
+
                     m_idx += 1
                     if self.skip_rescale:
+                        # if input_pyramid.shape[-2:] != h.shape[-2:]:
+                        #     dbg("GEN fusion size mismatch (before fix)", 
+                        #         f"pyr={tuple(input_pyramid.shape)}, h={tuple(h.shape)}")
+
+                        #     # Pyramid is 4x4, h is 8x8 in your crash; upsample pyramid:
+                        #     input_pyramid = F.interpolate(input_pyramid, size=h.shape[-2:], mode="nearest")
+
+                        #     dbg("GEN fusion size mismatch (after resize)", 
+                        #         f"pyr={tuple(input_pyramid.shape)}, h={tuple(h.shape)}")
                         input_pyramid = (input_pyramid + h) / np.sqrt(2.)
                     else:
                         input_pyramid = input_pyramid + h
