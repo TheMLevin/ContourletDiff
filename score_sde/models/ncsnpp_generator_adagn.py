@@ -57,6 +57,8 @@ get_act = layers.get_act
 default_initializer = layers.default_init
 dense = dense_layer.dense
 
+CONTOURLET_MIN_RESOLUTION = 12
+
 
 class PixelNorm(nn.Module):
     def __init__(self):
@@ -271,7 +273,6 @@ class NCSNpp(nn.Module):
                         pyramid_ch = in_ch
                     else:
                         raise ValueError(f'{progressive} is not a valid name')
-
             if i_level != 0:
                 if resblock_type == 'ddpm':
                     modules.append(Upsample(in_ch=in_ch))
@@ -993,6 +994,8 @@ class ContourletNCSNpp(NCSNpp):
                 pyramid_downsample = functools.partial(layerspp.Downsample,
                                                        fir=fir, fir_kernel=fir_kernel, with_conv=True)
             else:
+                low_res_pyramid_downsample = functools.partial(layerspp.Downsample,
+                                                       fir=fir, fir_kernel=fir_kernel, with_conv=True)
                 pyramid_downsample = functools.partial(
                     layerspp.ContourletDownsample, nlevs=self.nlevs)
 
@@ -1004,6 +1007,7 @@ class ContourletNCSNpp(NCSNpp):
                                             skip_rescale=skip_rescale,
                                             temb_dim=nf * 4,
                                             zemb_dim=z_emb_dim)
+            low_res_ResnetBlock = ResnetBlock
 
         elif resblock_type == 'biggan':
             if self.no_use_freq:
@@ -1016,6 +1020,7 @@ class ContourletNCSNpp(NCSNpp):
                                                 skip_rescale=skip_rescale,
                                                 temb_dim=nf * 4,
                                                 zemb_dim=z_emb_dim)
+                low_res_ResnetBlock = ResnetBlock
             else:
                 ResnetBlock = functools.partial(ContourletResnetBlockBigGAN,
                                                 act=act,
@@ -1025,6 +1030,15 @@ class ContourletNCSNpp(NCSNpp):
                                                 temb_dim=nf * 4,
                                                 zemb_dim=z_emb_dim,
                                                 nlevs=self.nlevs)
+                low_res_ResnetBlock = functools.partial(ResnetBlockBigGAN,
+                                                act=act,
+                                                dropout=dropout,
+                                                fir=fir,
+                                                fir_kernel=fir_kernel,
+                                                init_scale=init_scale,
+                                                skip_rescale=skip_rescale,
+                                                temb_dim=nf * 4,
+                                                zemb_dim=z_emb_dim)
 
         elif resblock_type == 'biggan_oneadagn':
             ResnetBlock = functools.partial(ResnetBlockBigGAN_one,
@@ -1036,6 +1050,7 @@ class ContourletNCSNpp(NCSNpp):
                                             skip_rescale=skip_rescale,
                                             temb_dim=nf * 4,
                                             zemb_dim=z_emb_dim)
+            low_res_ResnetBlock = ResnetBlock
 
         else:
             raise ValueError(f'resblock type {resblock_type} unrecognized.')
@@ -1063,11 +1078,13 @@ class ContourletNCSNpp(NCSNpp):
                 hs_c.append(in_ch)
 
             if i_level != num_resolutions - 1:
-                hs_c2.append(in_ch)
                 if resblock_type == 'ddpm':
                     modules.append(Downsample(in_ch=in_ch))
+                elif all_resolutions[i_level] < CONTOURLET_MIN_RESOLUTION:
+                    modules.append(low_res_ResnetBlock(down=True, in_ch=in_ch))
                 else:
                     modules.append(ResnetBlock(down=True, in_ch=in_ch))
+                    hs_c2.append(in_ch)
 
                 if progressive_input == 'input_skip':
                     modules.append(combiner(dim1=input_pyramid_ch, dim2=in_ch))
@@ -1075,7 +1092,11 @@ class ContourletNCSNpp(NCSNpp):
                         in_ch *= 2
 
                 elif progressive_input == 'residual':
-                    modules.append(pyramid_downsample(
+                    if all_resolutions[i_level] < CONTOURLET_MIN_RESOLUTION:
+                        modules.append(low_res_pyramid_downsample(
+                            in_ch=input_pyramid_ch, out_ch=in_ch))
+                    else:
+                        modules.append(pyramid_downsample(
                         in_ch=input_pyramid_ch, out_ch=in_ch))
                     input_pyramid_ch = in_ch
 
@@ -1130,6 +1151,8 @@ class ContourletNCSNpp(NCSNpp):
             if i_level != 0:
                 if resblock_type == 'ddpm':
                     modules.append(Upsample(in_ch=in_ch))
+                elif self.all_resolutions[i_level - 1] < CONTOURLET_MIN_RESOLUTION:
+                    modules.append(low_res_ResnetBlock(up=True, in_ch=in_ch))
                 else:
                     if self.no_use_freq:
                         modules.append(ResnetBlock(in_ch=in_ch, up=True))
@@ -1215,6 +1238,9 @@ class ContourletNCSNpp(NCSNpp):
             if i_level != self.num_resolutions - 1:
                 if self.resblock_type == 'ddpm':
                     h = modules[m_idx](h)
+                    m_idx += 1
+                elif self.all_resolutions[i_level] < CONTOURLET_MIN_RESOLUTION:
+                    h = modules[m_idx](h, temb, zemb)
                     m_idx += 1
                 else:
                     if self.no_use_freq:
@@ -1315,6 +1341,9 @@ class ContourletNCSNpp(NCSNpp):
             if i_level != 0:
                 if self.resblock_type == 'ddpm':
                     h = modules[m_idx](h)
+                    m_idx += 1
+                elif self.all_resolutions[i_level - 1] < CONTOURLET_MIN_RESOLUTION:
+                    h = modules[m_idx](h, temb, zemb)
                     m_idx += 1
                 else:
                     if self.no_use_freq:

@@ -37,6 +37,7 @@ if [[ $MODE == train ]]; then
 			--ch_mult 1 2 2 2 --save_content --datadir ./data/STL-10 \
 			--master_port $MASTER_PORT --num_process_per_node $GPUS \
 			--current_resolution 32 --attn_resolutions 16 --num_disc_layers 4 --rec_loss \
+			--no_use_fbn \
 			--net_type contourlet --contourlet_nlevs 2 \
 
 	elif [[ $DATASET == celeba_256 ]]; then

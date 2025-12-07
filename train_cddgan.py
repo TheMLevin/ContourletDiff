@@ -166,7 +166,7 @@ def train(rank, gpu, args):
             real_data = torch.cat([xlo] + xhi, dim=1)  # [b, C*(1+num_dir_subbands), h, w]
 
             # normalize real_data
-            real_data = real_data / 3  # [-1, 1]
+            real_data = real_data / 3.0  # [-1, 1]
 
             assert -1 <= real_data.min() < 0, f"real_data.min() = {real_data.min()}"
             assert 0 < real_data.max() <= 1, f"real_data.max() = {real_data.max()}"
