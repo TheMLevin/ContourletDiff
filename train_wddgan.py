@@ -121,7 +121,7 @@ def train(rank, gpu, args):
 
     if args.resume or os.path.exists(os.path.join(exp_path, 'content.pth')):
         checkpoint_file = os.path.join(exp_path, 'content.pth')
-        checkpoint = torch.load(checkpoint_file, map_location=device)
+        checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
         init_epoch = checkpoint['epoch']
         epoch = init_epoch
         # load G

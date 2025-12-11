@@ -92,6 +92,7 @@ else
 			--num_res_blocks 2 --nz 100 --z_emb_dim 256 --n_mlp 4 --ch_mult 1 2 2 2 --epoch_id 600 \
 			--image_size 64 --current_resolution 32 --attn_resolutions 16 \
 			--net_type contourlet --contourlet_nlevs 2 \
+			--no_use_fbn \
 			# --compute_fid --real_img_dir pytorch_fid/stl10_stat.npy \
 			# --batch_size 100 --measure_time \
 

@@ -16,6 +16,7 @@ from torch.optim import Optimizer
 
 class EMA(Optimizer):
     def __init__(self, opt, ema_decay):
+        super(EMA, self).__init__(params=opt.param_groups, defaults=opt.defaults)
         self.ema_decay = ema_decay
         self.apply_ema = self.ema_decay > 0.
         self.optimizer = opt
