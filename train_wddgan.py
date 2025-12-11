@@ -121,7 +121,7 @@ def train(rank, gpu, args):
 
     if args.resume or os.path.exists(os.path.join(exp_path, 'content.pth')):
         checkpoint_file = os.path.join(exp_path, 'content.pth')
-        checkpoint = torch.load(checkpoint_file, map_location=device)
+        checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
         init_epoch = checkpoint['epoch']
         epoch = init_epoch
         # load G
@@ -274,7 +274,7 @@ def train(rank, gpu, args):
                 if epoch % args.save_content_every == 0:
                     print('Saving content.')
                     content = {'epoch': epoch + 1, 'global_step': global_step, 'args': args,
-                               'netG_dict': netG.state_dict(), 'optimizerG': optimizerG.state_dict(),
+                               'netG_dict': netG.state_dict(), 'optimizerG': getattr(optimizerG, 'optimizer', optimizerG).state_dict(),
                                'schedulerG': schedulerG.state_dict(), 'netD_dict': netD.state_dict(),
                                'optimizerD': optimizerD.state_dict(), 'schedulerD': schedulerD.state_dict()}
                     torch.save(content, os.path.join(exp_path, 'content.pth'))

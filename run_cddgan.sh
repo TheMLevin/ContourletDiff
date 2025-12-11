@@ -37,6 +37,7 @@ if [[ $MODE == train ]]; then
 			--ch_mult 1 2 2 2 --save_content --datadir ./data/STL-10 \
 			--master_port $MASTER_PORT --num_process_per_node $GPUS \
 			--current_resolution 32 --attn_resolutions 16 --num_disc_layers 4 --rec_loss \
+			--no_use_fbn \
 			--net_type contourlet --contourlet_nlevs 2 \
 
 	elif [[ $DATASET == celeba_256 ]]; then
@@ -91,6 +92,7 @@ else
 			--num_res_blocks 2 --nz 100 --z_emb_dim 256 --n_mlp 4 --ch_mult 1 2 2 2 --epoch_id 600 \
 			--image_size 64 --current_resolution 32 --attn_resolutions 16 \
 			--net_type contourlet --contourlet_nlevs 2 \
+			--no_use_fbn \
 			# --compute_fid --real_img_dir pytorch_fid/stl10_stat.npy \
 			# --batch_size 100 --measure_time \
 

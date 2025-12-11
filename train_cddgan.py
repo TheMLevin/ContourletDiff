@@ -125,8 +125,8 @@ def train(rank, gpu, args):
     T = get_time_schedule(args, device)
 
     if args.resume or os.path.exists(os.path.join(exp_path, 'content.pth')):
-        checkpoint_file = os.path.join(exp_path, 'content.pth')
-        checkpoint = torch.load(checkpoint_file, map_location=device)
+            checkpoint_file = os.path.join(exp_path, 'content.pth')
+        checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
         init_epoch = checkpoint['epoch']
         epoch = init_epoch
         # load G
@@ -166,10 +166,10 @@ def train(rank, gpu, args):
             real_data = torch.cat([xlo] + xhi, dim=1)  # [b, C*(1+num_dir_subbands), h, w]
 
             # normalize real_data
-            real_data = real_data / 2.0  # [-1, 1]
+            real_data = real_data / 3.0  # [-1, 1]
 
-            assert -1 <= real_data.min() < 0
-            assert 0 < real_data.max() <= 1
+            assert -1 <= real_data.min() < 0, f"real_data.min() = {real_data.min()}"
+            assert 0 < real_data.max() <= 1, f"real_data.max() = {real_data.max()}"
 
             # sample t
             t = torch.randint(0, args.num_timesteps,
@@ -252,8 +252,8 @@ def train(rank, gpu, args):
             fake_sample = sample_from_model(
                 pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
 
-            fake_sample *= 2
-            real_data *= 2
+            fake_sample *= 3
+            real_data *= 3
             # Contourlet reconstruction (always used in cddgan)
             # Split fake_sample and real_data back into lowpass and directional subbands
             # Calculate channels per subband from total channels
@@ -279,7 +279,7 @@ def train(rank, gpu, args):
                 if epoch % args.save_content_every == 0:
                     print('Saving content.')
                     content = {'epoch': epoch + 1, 'global_step': global_step, 'args': args,
-                               'netG_dict': netG.state_dict(), 'optimizerG': optimizerG.state_dict(),
+                               'netG_dict': netG.state_dict(), 'optimizerG': getattr(optimizerG, 'optimizer', optimizerG).state_dict(),
                                'schedulerG': schedulerG.state_dict(), 'netD_dict': netD.state_dict(),
                                'optimizerD': optimizerD.state_dict(), 'schedulerD': schedulerD.state_dict()}
                     torch.save(content, os.path.join(exp_path, 'content.pth'))
